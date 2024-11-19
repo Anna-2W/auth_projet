@@ -1,9 +1,9 @@
-const { signupSchema } = require('../middlewares/validator');
-const { signinSchema } = require('../middlewares/validator');
+const { signupSchema, signinSchema, emailSchema } = require('../middlewares/validator');
 
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const User = require('../models/usersModel');
+const {createTransport} = require("nodemailer");
 
 
 exports.signup = async (req, res) => {
@@ -124,3 +124,52 @@ exports.signout = async (req, res) => {
         .status(200)
         .json({ success: true, message: 'logged out successfully' });
 };
+
+exports.sendVerificationCode = async (req, res) => {
+    const { email } = req.body;
+    try {
+        // Utiliser le schéma emailSchema pour la validation de l'email uniquement
+        const { error } = emailSchema.validate({ email });
+        if (error) {
+            return res.status(400).json({ success: false, message: error.details[0].message });
+        }
+
+        // Vérification si l'utilisateur existe
+        const existingUser = await User.findOne({ email });
+        if (!existingUser) {
+            return res.status(404).json({ success: false, message: 'User does not exist!' });
+        }
+
+        if (existingUser.verified) {
+            return res.status(400).json({ success: false, message: 'You are already verified!' });
+        }
+
+        // Génération du code de vérification à 6 chiffres
+        const codeValue = Math.floor(100000 + Math.random() * 900000).toString();
+
+        // Envoi de l'email
+        let info = await transport.sendMail({
+            from: process.env.NODE_CODE_SENDING_EMAIL_ADDRESS,
+            to: existingUser.email,
+            subject: 'Verification Code',
+            html: `<h1>${codeValue}</h1>`,
+        });
+
+        if (info.accepted && info.accepted[0] === existingUser.email) {
+            // Hashage du code de vérification
+            const hashedCodeValue = hmacProcess(codeValue, process.env.HMAC_VERIFICATION_CODE_SECRET);
+            existingUser.verificationCode = hashedCodeValue;
+            existingUser.verificationCodeValidation = Date.now() + 10 * 60 * 1000; // Code valide pendant 10 minutes
+            await existingUser.save();
+
+            return res.status(200).json({ success: true, message: 'Code sent!' });
+        }
+
+        // En cas d'échec d'envoi de l'email
+        return res.status(400).json({ success: false, message: 'Code sending failed!' });
+    } catch (error) {
+        console.error(error);
+        return res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+};
+
